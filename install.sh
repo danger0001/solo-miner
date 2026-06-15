@@ -113,11 +113,14 @@ fi
 # ── 第三步：安装 Python 依赖 ──────────────────────────────────────────────────
 log_step "第三步：安装 Python 依赖"
 
+# 统一使用 python3 -m pip，兼容所有系统
+PIP="python3 -m pip"
+
 log_info "升级 pip..."
-pip3 install -q --upgrade pip
+$PIP install -q --upgrade pip
 
 log_info "安装基础依赖（aiohttp, PyYAML, numpy）..."
-pip3 install -q aiohttp PyYAML numpy
+$PIP install -q aiohttp PyYAML numpy
 log_ok "基础依赖安装完成"
 
 if [[ "$GPU_AVAILABLE" == "true" ]]; then
@@ -127,14 +130,14 @@ if [[ "$GPU_AVAILABLE" == "true" ]]; then
         CUDA_MINOR=$(nvcc --version | grep -oP 'release [0-9]+\.\K[0-9]+' | head -1)
         CUPY_PKG="cupy-cuda${CUDA_MAJOR}${CUDA_MINOR}x"
         log_info "安装 $CUPY_PKG..."
-        pip3 install -q "$CUPY_PKG" && log_ok "CuPy GPU 库安装完成" || {
+        $PIP install -q "$CUPY_PKG" && log_ok "CuPy GPU 库安装完成" || {
             log_warn "CuPy 安装失败，尝试安装 pycuda..."
-            pip3 install -q pycuda && log_ok "pycuda 安装完成" || \
+            $PIP install -q pycuda && log_ok "pycuda 安装完成" || \
                 log_warn "GPU 库安装失败，将使用 CPU 模式"
         }
     else
         log_info "安装 cupy-cuda12x（默认 CUDA 12）..."
-        pip3 install -q cupy-cuda12x && log_ok "CuPy GPU 库安装完成" || \
+        $PIP install -q cupy-cuda12x && log_ok "CuPy GPU 库安装完成" || \
             log_warn "GPU 库安装失败，将使用 CPU 模式"
     fi
 else
