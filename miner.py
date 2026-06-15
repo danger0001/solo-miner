@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-miner.py — CSD Solo GPU Miner
-Compute Substrate mainnet miner that uses GPU-accelerated hash computation
-to submit proposals and attestations to the CSD network.
+miner.py — CSD 单机 GPU 矿工
+Compute Substrate 主网矿工，使用 GPU 加速哈希计算，
+自动向 CSD 网络提交提案与认证。
 """
 
 import argparse
@@ -14,27 +14,26 @@ import signal
 import subprocess
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import aiohttp
 import yaml
 
-from gpu_worker import GPUWorker
+from gpu_worker import GPU工作器
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# ── 日志配置 ──────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-log = logging.getLogger("csd-miner")
+日志 = logging.getLogger("csd-矿工")
 
-# ── Constants ─────────────────────────────────────────────────────────────────
+# ── 主网引导节点 ──────────────────────────────────────────────────────────────
 
-MAINNET_BOOTNODES = [
+主网引导节点 = [
     "/ip4/151.240.121.186/tcp/17999",
     "/ip4/151.240.121.220/tcp/17999",
     "/ip4/151.240.121.187/tcp/17999",
@@ -44,452 +43,433 @@ MAINNET_BOOTNODES = [
 ]
 
 
-# ── Config ────────────────────────────────────────────────────────────────────
+# ── 配置加载 ──────────────────────────────────────────────────────────────────
 
-def load_config(path: str) -> dict:
-    with open(path) as f:
-        cfg = yaml.safe_load(f)
-    return cfg
-
-
-def build_rpc_url(cfg: dict) -> str:
-    host = cfg["node"]["rpc_host"].replace("0.0.0.0", "127.0.0.1")
-    port = cfg["node"]["rpc_port"]
-    return f"http://{host}:{port}"
+def 加载配置(路径: str) -> dict:
+    with open(路径) as f:
+        return yaml.safe_load(f)
 
 
-# ── Node management ───────────────────────────────────────────────────────────
+def 构建RPC地址(配置: dict) -> str:
+    主机 = 配置["node"]["rpc_host"].replace("0.0.0.0", "127.0.0.1")
+    端口 = 配置["node"]["rpc_port"]
+    return f"http://{主机}:{端口}"
 
-class CSDNode:
-    """Manages the csd node subprocess."""
 
-    def __init__(self, cfg: dict, bootnodes: list[str]):
-        self.cfg = cfg
-        self.bootnodes = bootnodes
-        self.process: Optional[subprocess.Popen] = None
+# ── CSD 节点管理 ──────────────────────────────────────────────────────────────
 
-    def _build_cmd(self) -> list[str]:
-        n = self.cfg["node"]
-        cmd = [
+class CSD节点:
+    """管理 csd 节点子进程。"""
+
+    def __init__(self, 配置: dict, 引导节点列表: list[str]):
+        self.配置 = 配置
+        self.引导节点列表 = 引导节点列表
+        self.进程: Optional[subprocess.Popen] = None
+
+    def _构建命令(self) -> list[str]:
+        n = self.配置["node"]
+        命令 = [
             "./csd", "node",
             "--datadir", n["datadir"],
             "--rpc", f"{n['rpc_host']}:{n['rpc_port']}",
             "--genesis", n["genesis"],
             "--p2p-listen", f"/ip4/{n['p2p_host']}/tcp/{n['p2p_port']}",
         ]
-        for bn in self.bootnodes:
-            cmd += ["--bootnodes", bn]
-        return cmd
+        for 节点 in self.引导节点列表:
+            命令 += ["--bootnodes", 节点]
+        return 命令
 
-    def start(self):
-        cmd = self._build_cmd()
-        bn_display = ", ".join(self.bootnodes[:3])
-        if len(self.bootnodes) > 3:
-            bn_display += f" (+{len(self.bootnodes) - 3} more)"
-        log.info("Starting csd node...")
-        log.info("  Bootstrap nodes: %s", bn_display)
-        log.info("  RPC: %s:%s", self.cfg["node"]["rpc_host"], self.cfg["node"]["rpc_port"])
-        log.info("  P2P: /ip4/%s/tcp/%s", self.cfg["node"]["p2p_host"], self.cfg["node"]["p2p_port"])
+    def 启动(self):
+        命令 = self._构建命令()
+        节点摘要 = "、".join(self.引导节点列表[:3])
+        if len(self.引导节点列表) > 3:
+            节点摘要 += f" 等共 {len(self.引导节点列表)} 个"
+        日志.info("正在启动 csd 节点...")
+        日志.info("  引导节点：%s", 节点摘要)
+        日志.info("  RPC 地址：%s:%s", self.配置["node"]["rpc_host"], self.配置["node"]["rpc_port"])
+        日志.info("  P2P 地址：/ip4/%s/tcp/%s", self.配置["node"]["p2p_host"], self.配置["node"]["p2p_port"])
 
-        self.process = subprocess.Popen(
-            cmd,
+        self.进程 = subprocess.Popen(
+            命令,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
         )
-        log.info("csd node started (PID %d)", self.process.pid)
+        日志.info("csd 节点已启动（PID %d）", self.进程.pid)
 
-    def stop(self):
-        if self.process and self.process.poll() is None:
-            log.info("Stopping csd node (PID %d)...", self.process.pid)
-            self.process.terminate()
+    def 停止(self):
+        if self.进程 and self.进程.poll() is None:
+            日志.info("正在停止 csd 节点（PID %d）...", self.进程.pid)
+            self.进程.terminate()
             try:
-                self.process.wait(timeout=10)
+                self.进程.wait(timeout=10)
             except subprocess.TimeoutExpired:
-                self.process.kill()
+                self.进程.kill()
 
-    def is_running(self) -> bool:
-        return self.process is not None and self.process.poll() is None
+    def 运行中(self) -> bool:
+        return self.进程 is not None and self.进程.poll() is None
 
-    async def drain_logs(self):
-        """Stream node stdout to logger in background."""
-        if not self.process:
+    async def 输出日志(self):
+        if not self.进程:
             return
-        loop = asyncio.get_event_loop()
-        while self.is_running():
-            line = await loop.run_in_executor(None, self.process.stdout.readline)
-            if line:
-                log.debug("[node] %s", line.rstrip())
+        循环 = asyncio.get_event_loop()
+        while self.运行中():
+            行 = await 循环.run_in_executor(None, self.进程.stdout.readline)
+            if 行:
+                日志.debug("[节点] %s", 行.rstrip())
             else:
                 await asyncio.sleep(0.1)
 
 
-# ── RPC client ────────────────────────────────────────────────────────────────
+# ── RPC 客户端 ────────────────────────────────────────────────────────────────
 
-class CSDClient:
-    """Thin async HTTP client for the csd node RPC."""
+class CSD客户端:
+    """csd 节点 RPC 异步 HTTP 客户端。"""
 
-    def __init__(self, base_url: str):
-        self.base_url = base_url
-        self._session: Optional[aiohttp.ClientSession] = None
+    def __init__(self, 基础地址: str):
+        self.基础地址 = 基础地址
+        self._会话: Optional[aiohttp.ClientSession] = None
 
     async def __aenter__(self):
-        self._session = aiohttp.ClientSession(
+        self._会话 = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=10)
         )
         return self
 
     async def __aexit__(self, *_):
-        if self._session:
-            await self._session.close()
+        if self._会话:
+            await self._会话.close()
 
-    async def _get(self, path: str) -> dict:
-        async with self._session.get(f"{self.base_url}{path}") as r:
+    async def _GET(self, 路径: str) -> dict:
+        async with self._会话.get(f"{self.基础地址}{路径}") as r:
             r.raise_for_status()
             return await r.json()
 
-    async def _post(self, path: str, data: dict) -> dict:
-        async with self._session.post(
-            f"{self.base_url}{path}",
-            json=data,
+    async def _POST(self, 路径: str, 数据: dict) -> dict:
+        async with self._会话.post(
+            f"{self.基础地址}{路径}",
+            json=数据,
             headers={"Content-Type": "application/json"},
         ) as r:
             r.raise_for_status()
             return await r.json()
 
-    async def get_status(self) -> dict:
-        return await self._get("/status")
+    async def 获取状态(self) -> dict:
+        return await self._GET("/status")
 
-    async def get_epoch(self) -> int:
-        status = await self.get_status()
-        return status.get("epoch", 0)
+    async def 获取轮次(self) -> int:
+        状态 = await self.获取状态()
+        return 状态.get("epoch", 0)
 
-    async def get_peers(self) -> list:
-        result = await self._get("/peers")
-        return result.get("peers", [])
+    async def 获取节点列表(self) -> list:
+        结果 = await self._GET("/peers")
+        return 结果.get("peers", [])
 
-    async def submit_proposal(self, domain: str, nonce: int, hash_hex: str, payload: str) -> dict:
-        return await self._post("/proposal", {
-            "domain": domain,
-            "nonce": nonce,
-            "hash": hash_hex,
-            "payload": payload,
+    async def 提交提案(self, 域: str, 随机数: int, 哈希: str, 载荷: str) -> dict:
+        return await self._POST("/proposal", {
+            "domain": 域,
+            "nonce": 随机数,
+            "hash": 哈希,
+            "payload": 载荷,
         })
 
-    async def submit_attestation(self, proposal_id: str, score: float, confidence: float) -> dict:
-        return await self._post("/attest", {
-            "proposal_id": proposal_id,
-            "score": score,
-            "confidence": confidence,
+    async def 提交认证(self, 提案ID: str, 分数: float, 置信度: float) -> dict:
+        return await self._POST("/attest", {
+            "proposal_id": 提案ID,
+            "score": 分数,
+            "confidence": 置信度,
         })
 
-    async def get_proposals(self, domain: str, epoch: int) -> list:
-        result = await self._get(f"/proposals/{domain}/{epoch}")
-        return result.get("proposals", [])
+    async def 获取提案列表(self, 域: str, 轮次: int) -> list:
+        结果 = await self._GET(f"/proposals/{域}/{轮次}")
+        return 结果.get("proposals", [])
 
-    async def wait_for_node(self, retries: int = 30, delay: float = 2.0):
-        """Block until the node RPC is responsive."""
-        log.info("Waiting for node RPC to become available...")
-        for attempt in range(retries):
+    async def 等待节点就绪(self, 最大重试次数: int = 40, 间隔秒数: float = 3.0):
+        日志.info("等待节点 RPC 就绪...")
+        for 第几次 in range(最大重试次数):
             try:
-                await self.get_status()
-                log.info("Node RPC is ready.")
+                await self.获取状态()
+                日志.info("节点 RPC 已就绪")
                 return
             except Exception:
-                if attempt < retries - 1:
-                    await asyncio.sleep(delay)
-        raise RuntimeError("Node RPC did not become available in time.")
+                if 第几次 < 最大重试次数 - 1:
+                    await asyncio.sleep(间隔秒数)
+        raise RuntimeError("节点 RPC 等待超时，请检查节点是否正常启动")
 
 
-# ── Stats tracker ─────────────────────────────────────────────────────────────
+# ── 统计数据 ──────────────────────────────────────────────────────────────────
 
-class MinerStats:
+class 挖矿统计:
     def __init__(self):
-        self.start_time = time.time()
-        self.proposals_submitted = 0
-        self.proposals_accepted = 0
-        self.attestations_submitted = 0
-        self.last_epoch = 0
-        self.last_reward_epoch = 0
-        self.gpu_hashrate_mhs = 0.0
-        self.peers_connected = 0
+        self.启动时间 = time.time()
+        self.已提交提案数 = 0
+        self.已接受提案数 = 0
+        self.已提交认证数 = 0
+        self.当前轮次 = 0
+        self.上次获奖轮次 = 0
+        self.GPU算力MHs = 0.0
+        self.已连接节点数 = 0
 
-    def uptime(self) -> int:
-        return int(time.time() - self.start_time)
+    def 运行时间(self) -> int:
+        return int(time.time() - self.启动时间)
 
-    def to_dict(self) -> dict:
+    def 转为字典(self) -> dict:
         return {
-            "uptime_seconds": self.uptime(),
-            "proposals_submitted": self.proposals_submitted,
-            "proposals_accepted": self.proposals_accepted,
-            "attestations_submitted": self.attestations_submitted,
-            "gpu_hashrate_mhs": round(self.gpu_hashrate_mhs, 2),
-            "peers_connected": self.peers_connected,
-            "current_epoch": self.last_epoch,
-            "last_reward_epoch": self.last_reward_epoch,
+            "运行时间（秒）": self.运行时间(),
+            "已提交提案数": self.已提交提案数,
+            "已接受提案数": self.已接受提案数,
+            "已提交认证数": self.已提交认证数,
+            "GPU算力（MH/s）": round(self.GPU算力MHs, 2),
+            "已连接节点数": self.已连接节点数,
+            "当前轮次": self.当前轮次,
+            "上次获奖轮次": self.上次获奖轮次,
         }
 
-    def log_summary(self):
-        log.info(
-            "Stats | epoch=%d  proposals=%d/%d  attestations=%d  hashrate=%.1f MH/s  peers=%d  uptime=%ds",
-            self.last_epoch,
-            self.proposals_accepted,
-            self.proposals_submitted,
-            self.attestations_submitted,
-            self.gpu_hashrate_mhs,
-            self.peers_connected,
-            self.uptime(),
+    def 打印摘要(self):
+        日志.info(
+            "统计 | 轮次=%d  提案=%d/%d  认证=%d  算力=%.1f MH/s  节点=%d  运行=%d秒",
+            self.当前轮次,
+            self.已接受提案数,
+            self.已提交提案数,
+            self.已提交认证数,
+            self.GPU算力MHs,
+            self.已连接节点数,
+            self.运行时间(),
         )
 
 
-# ── Stats HTTP server ─────────────────────────────────────────────────────────
+# ── 统计 HTTP 服务 ────────────────────────────────────────────────────────────
 
-async def stats_server(stats: MinerStats, host: str = "127.0.0.1", port: int = 9090):
-    """Serve a simple JSON stats endpoint at /stats."""
+async def 统计服务(统计: 挖矿统计, 主机: str = "127.0.0.1", 端口: int = 9090):
     from aiohttp import web
 
-    async def handle(request):
-        return web.json_response(stats.to_dict())
+    async def 处理请求(request):
+        return web.json_response(统计.转为字典(), dumps=lambda d: json.dumps(d, ensure_ascii=False, indent=2))
 
-    app = web.Application()
-    app.router.add_get("/stats", handle)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host, port)
-    await site.start()
-    log.info("Stats endpoint: http://%s:%d/stats", host, port)
+    应用 = web.Application()
+    应用.router.add_get("/stats", 处理请求)
+    应用.router.add_get("/统计", 处理请求)
+    运行器 = web.AppRunner(应用)
+    await 运行器.setup()
+    站点 = web.TCPSite(运行器, 主机, 端口)
+    await 站点.start()
+    日志.info("监控面板：http://%s:%d/统计", 主机, 端口)
 
 
-# ── Mining loop ───────────────────────────────────────────────────────────────
+# ── 提案循环 ──────────────────────────────────────────────────────────────────
 
-async def proposal_loop(client: CSDClient, gpu: GPUWorker, cfg: dict, stats: MinerStats):
-    """Continuously generate GPU-accelerated proposals and submit them."""
-    domain = cfg["mining"]["domain"]
-    interval = cfg["mining"]["proposal_interval"]
-    difficulty = cfg["mining"]["difficulty_target"]
-    wallet = cfg["miner"]["wallet_address"]
-    worker = cfg["miner"]["worker_name"]
+async def 提案循环(客户端: CSD客户端, GPU: GPU工作器, 配置: dict, 统计: 挖矿统计):
+    域 = 配置["mining"]["domain"]
+    间隔 = 配置["mining"]["proposal_interval"]
+    难度 = 配置["mining"]["difficulty_target"]
+    钱包 = 配置["miner"]["wallet_address"]
+    工作器 = 配置["miner"]["worker_name"]
 
-    log.info("Starting proposal loop | domain=%s  interval=%ds", domain, interval)
+    日志.info("提案循环已启动 | 域=%s  间隔=%d秒", 域, 间隔)
 
     while True:
         try:
-            epoch = await client.get_epoch()
-            stats.last_epoch = epoch
+            轮次 = await 客户端.获取轮次()
+            统计.当前轮次 = 轮次
 
-            # GPU: compute best nonce + hash for this epoch
+            # GPU 计算最优随机数和哈希
             t0 = time.perf_counter()
-            nonce, hash_hex = await asyncio.get_event_loop().run_in_executor(
-                None,
-                gpu.find_nonce,
-                epoch,
-                difficulty,
+            随机数, 哈希值 = await asyncio.get_event_loop().run_in_executor(
+                None, GPU.搜索随机数, 轮次, 难度
             )
-            elapsed = time.perf_counter() - t0
-            stats.gpu_hashrate_mhs = (gpu.batch_size / elapsed) / 1e6
+            耗时 = time.perf_counter() - t0
+            统计.GPU算力MHs = (GPU.批量大小 / 耗时) / 1e6
 
-            payload = json.dumps({
-                "wallet": wallet,
-                "worker": worker,
-                "epoch": epoch,
+            载荷 = json.dumps({
+                "wallet": 钱包,
+                "worker": 工作器,
+                "epoch": 轮次,
                 "ts": int(time.time()),
             })
 
-            result = await client.submit_proposal(domain, nonce, hash_hex, payload)
-            stats.proposals_submitted += 1
+            结果 = await 客户端.提交提案(域, 随机数, 哈希值, 载荷)
+            统计.已提交提案数 += 1
 
-            if result.get("accepted"):
-                stats.proposals_accepted += 1
-                log.info(
-                    "Proposal ACCEPTED | epoch=%d  nonce=%d  hash=%s...  hashrate=%.1f MH/s",
-                    epoch, nonce, hash_hex[:16], stats.gpu_hashrate_mhs,
+            if 结果.get("accepted"):
+                统计.已接受提案数 += 1
+                日志.info(
+                    "提案已接受 | 轮次=%d  随机数=%d  哈希=%s...  算力=%.1f MH/s",
+                    轮次, 随机数, 哈希值[:16], 统计.GPU算力MHs,
                 )
             else:
-                reason = result.get("reason", "unknown")
-                log.warning("Proposal rejected | epoch=%d  reason=%s", epoch, reason)
+                原因 = 结果.get("reason", "未知")
+                日志.warning("提案被拒绝 | 轮次=%d  原因=%s", 轮次, 原因)
 
-        except aiohttp.ClientError as exc:
-            log.warning("RPC error in proposal loop: %s", exc)
-        except Exception as exc:
-            log.error("Unexpected error in proposal loop: %s", exc, exc_info=True)
+        except aiohttp.ClientError as 异常:
+            日志.warning("提案循环 RPC 错误：%s", 异常)
+        except Exception as 异常:
+            日志.error("提案循环意外错误：%s", 异常, exc_info=True)
 
-        await asyncio.sleep(interval)
+        await asyncio.sleep(间隔)
 
 
-async def attestation_loop(client: CSDClient, gpu: GPUWorker, cfg: dict, stats: MinerStats):
-    """Fetch pending proposals and attest to the best ones using GPU scoring."""
-    domain = cfg["mining"]["domain"]
-    interval = cfg["mining"]["attestation_interval"]
+async def 认证循环(客户端: CSD客户端, GPU: GPU工作器, 配置: dict, 统计: 挖矿统计):
+    域 = 配置["mining"]["domain"]
+    间隔 = 配置["mining"]["attestation_interval"]
 
-    log.info("Starting attestation loop | domain=%s  interval=%ds", domain, interval)
+    日志.info("认证循环已启动 | 域=%s  间隔=%d秒", 域, 间隔)
 
     while True:
         try:
-            epoch = await client.get_epoch()
-            proposals = await client.get_proposals(domain, epoch)
+            轮次 = await 客户端.获取轮次()
+            提案列表 = await 客户端.获取提案列表(域, 轮次)
 
-            if proposals:
-                # GPU: score all proposals in parallel
-                scored = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    gpu.score_proposals,
-                    proposals,
+            if 提案列表:
+                已评分 = await asyncio.get_event_loop().run_in_executor(
+                    None, GPU.评分提案, 提案列表
                 )
-                # Attest to the top-ranked proposal
-                best = max(scored, key=lambda x: x["score"])
-                result = await client.submit_attestation(
-                    best["id"], best["score"], best["confidence"]
-                )
-                stats.attestations_submitted += 1
-                log.debug(
-                    "Attested | proposal=%s  score=%.4f  confidence=%.4f",
-                    best["id"][:12], best["score"], best["confidence"],
+                最优 = max(已评分, key=lambda x: x["score"])
+                await 客户端.提交认证(最优["id"], 最优["score"], 最优["confidence"])
+                统计.已提交认证数 += 1
+                日志.debug(
+                    "认证已提交 | 提案=%s  分数=%.4f  置信度=%.4f",
+                    最优["id"][:12], 最优["score"], 最优["confidence"],
                 )
 
-        except aiohttp.ClientError as exc:
-            log.warning("RPC error in attestation loop: %s", exc)
-        except Exception as exc:
-            log.error("Unexpected error in attestation loop: %s", exc, exc_info=True)
+        except aiohttp.ClientError as 异常:
+            日志.warning("认证循环 RPC 错误：%s", 异常)
+        except Exception as 异常:
+            日志.error("认证循环意外错误：%s", 异常, exc_info=True)
 
-        await asyncio.sleep(interval)
+        await asyncio.sleep(间隔)
 
 
-async def peer_monitor(client: CSDClient, stats: MinerStats):
-    """Periodically update peer count."""
+async def 节点监控(客户端: CSD客户端, 统计: 挖矿统计):
     while True:
         try:
-            peers = await client.get_peers()
-            stats.peers_connected = len(peers)
-            if stats.peers_connected == 0:
-                log.warning("No peers connected — check bootstrap nodes or network")
+            节点列表 = await 客户端.获取节点列表()
+            统计.已连接节点数 = len(节点列表)
+            if 统计.已连接节点数 == 0:
+                日志.warning("当前无已连接节点，请检查引导节点配置或网络连接")
         except Exception:
             pass
         await asyncio.sleep(30)
 
 
-async def stats_reporter(stats: MinerStats):
-    """Print periodic summary."""
+async def 定时统计(统计: 挖矿统计):
     while True:
         await asyncio.sleep(60)
-        stats.log_summary()
+        统计.打印摘要()
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ── 参数解析 ──────────────────────────────────────────────────────────────────
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="CSD Solo GPU Miner")
-    parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
-    parser.add_argument(
-        "--bootnodes",
-        default=None,
-        help='Comma-separated bootnode multiaddrs, or "all" for all mainnet nodes',
+def 解析参数():
+    解析器 = argparse.ArgumentParser(description="CSD 单机 GPU 矿工")
+    解析器.add_argument("--config", "--配置", default="config.yaml", help="配置文件路径")
+    解析器.add_argument(
+        "--bootnodes", "--引导节点", default=None,
+        help='引导节点（逗号分隔），或 "全部"/"all" 使用所有主网节点',
     )
-    parser.add_argument("--no-node", action="store_true", help="Skip launching csd node (use existing)")
-    parser.add_argument("--gpu", type=int, default=None, help="Override GPU device index")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    return parser.parse_args()
+    解析器.add_argument("--no-node", "--仅矿工", action="store_true", help="跳过启动 csd 节点")
+    解析器.add_argument("--gpu", "--显卡", type=int, default=None, help="指定显卡设备编号")
+    解析器.add_argument("--debug", "--调试", action="store_true", help="开启详细日志")
+    return 解析器.parse_args()
 
 
-def resolve_bootnodes(args_bootnodes: Optional[str], cfg_bootnodes: list[str]) -> list[str]:
-    if args_bootnodes is None:
-        return cfg_bootnodes or MAINNET_BOOTNODES
-    if args_bootnodes.strip().lower() == "all":
-        return MAINNET_BOOTNODES
-    return [bn.strip() for bn in args_bootnodes.split(",") if bn.strip()]
+def 解析引导节点(参数值: Optional[str], 配置节点: list[str]) -> list[str]:
+    if 参数值 is None:
+        return 配置节点 or 主网引导节点
+    if 参数值.strip().lower() in ("全部", "all"):
+        return 主网引导节点
+    return [n.strip() for n in 参数值.split(",") if n.strip()]
 
 
-async def main():
-    args = parse_args()
+# ── 主程序 ────────────────────────────────────────────────────────────────────
 
-    if args.debug:
+async def 主程序():
+    参数 = 解析参数()
+
+    if 参数.debug:
         logging.getLogger().setLevel(logging.DEBUG)
 
-    # Load config
-    cfg_path = Path(args.config)
-    if not cfg_path.exists():
-        log.error("Config file not found: %s  (run ./setup.sh first)", cfg_path)
+    配置路径 = Path(参数.config)
+    if not 配置路径.exists():
+        日志.error("配置文件不存在：%s  请先运行 ./install.sh", 配置路径)
         sys.exit(1)
-    cfg = load_config(str(cfg_path))
+    配置 = 加载配置(str(配置路径))
 
-    # Apply CLI overrides
-    if args.gpu is not None:
-        cfg["gpu"]["device_id"] = args.gpu
+    if 参数.gpu is not None:
+        配置["gpu"]["device_id"] = 参数.gpu
 
-    bootnodes = resolve_bootnodes(args.bootnodes, cfg.get("bootnodes", []))
-    log.info("Bootstrap nodes (%d):", len(bootnodes))
-    for bn in bootnodes:
-        log.info("  %s", bn)
+    引导节点列表 = 解析引导节点(参数.bootnodes, 配置.get("bootnodes", []))
+    日志.info("引导节点（共 %d 个）：", len(引导节点列表))
+    for 节点 in 引导节点列表:
+        日志.info("  %s", 节点)
 
-    # Validate wallet
-    wallet = cfg["miner"].get("wallet_address", "")
-    if not wallet or wallet == "YOUR_WALLET_ADDRESS_HERE":
-        log.error("wallet_address is not set in config.yaml")
+    钱包 = 配置["miner"].get("wallet_address", "")
+    if not 钱包 or 钱包 == "YOUR_WALLET_ADDRESS_HERE":
+        日志.error("wallet_address 未在 config.yaml 中设置")
         sys.exit(1)
 
-    stats = MinerStats()
+    统计 = 挖矿统计()
 
-    # Start csd node subprocess
-    node = CSDNode(cfg, bootnodes)
-    if not args.no_node:
-        node.start()
+    # 启动 csd 节点
+    节点 = CSD节点(配置, 引导节点列表)
+    if not 参数.no_node:
+        节点.启动()
 
-    # Graceful shutdown
-    loop = asyncio.get_event_loop()
-    shutdown_event = asyncio.Event()
+    # 优雅退出处理
+    循环 = asyncio.get_event_loop()
+    退出事件 = asyncio.Event()
 
-    def _signal_handler():
-        log.info("Shutdown signal received...")
-        shutdown_event.set()
+    def _退出处理():
+        日志.info("收到退出信号...")
+        退出事件.set()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _signal_handler)
+    for 信号量 in (signal.SIGINT, signal.SIGTERM):
+        循环.add_signal_handler(信号量, _退出处理)
 
-    # Initialize GPU worker
-    gpu = GPUWorker(
-        device_id=cfg["gpu"]["device_id"],
-        threads_per_block=cfg["gpu"]["threads_per_block"],
-        max_blocks=cfg["gpu"]["max_blocks"],
-        batch_size=cfg["gpu"]["batch_size"],
+    # 初始化 GPU 工作器
+    GPU = GPU工作器(
+        设备编号=配置["gpu"]["device_id"],
+        每块线程数=配置["gpu"]["threads_per_block"],
+        最大块数=配置["gpu"]["max_blocks"],
+        批量大小=配置["gpu"]["batch_size"],
     )
-    gpu.initialize()
+    GPU.初始化()
 
-    rpc_url = build_rpc_url(cfg)
+    RPC地址 = 构建RPC地址(配置)
 
-    async with CSDClient(rpc_url) as client:
-        await client.wait_for_node(retries=40, delay=3.0)
+    async with CSD客户端(RPC地址) as 客户端:
+        await 客户端.等待节点就绪()
 
-        tasks = [
-            asyncio.create_task(proposal_loop(client, gpu, cfg, stats)),
-            asyncio.create_task(attestation_loop(client, gpu, cfg, stats)),
-            asyncio.create_task(peer_monitor(client, stats)),
-            asyncio.create_task(stats_reporter(stats)),
-            asyncio.create_task(stats_server(stats)),
+        任务列表 = [
+            asyncio.create_task(提案循环(客户端, GPU, 配置, 统计)),
+            asyncio.create_task(认证循环(客户端, GPU, 配置, 统计)),
+            asyncio.create_task(节点监控(客户端, 统计)),
+            asyncio.create_task(定时统计(统计)),
+            asyncio.create_task(统计服务(统计)),
         ]
-        if not args.no_node:
-            tasks.append(asyncio.create_task(node.drain_logs()))
+        if not 参数.no_node:
+            任务列表.append(asyncio.create_task(节点.输出日志()))
 
-        log.info("=" * 60)
-        log.info("  CSD Solo GPU Miner running")
-        log.info("  Wallet : %s", wallet)
-        log.info("  Domain : %s", cfg["mining"]["domain"])
-        log.info("  GPU    : device %d", cfg["gpu"]["device_id"])
-        log.info("  Stats  : http://127.0.0.1:9090/stats")
-        log.info("=" * 60)
+        日志.info("=" * 60)
+        日志.info("  CSD 单机 GPU 矿工已启动")
+        日志.info("  钱包地址  : %s", 钱包)
+        日志.info("  挖矿域    : %s", 配置["mining"]["domain"])
+        日志.info("  显卡设备  : %d", 配置["gpu"]["device_id"])
+        日志.info("  监控面板  : http://127.0.0.1:9090/统计")
+        日志.info("=" * 60)
 
-        # Run until shutdown signal or node dies
-        await shutdown_event.wait()
+        await 退出事件.wait()
 
-        log.info("Shutting down...")
-        for t in tasks:
+        日志.info("正在关闭...")
+        for t in 任务列表:
             t.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*任务列表, return_exceptions=True)
 
-    node.stop()
-    gpu.shutdown()
-    log.info("Miner stopped. Final stats:")
-    stats.log_summary()
+    节点.停止()
+    GPU.关闭()
+    日志.info("矿工已停止，最终统计：")
+    统计.打印摘要()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(主程序())
