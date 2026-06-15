@@ -1,56 +1,52 @@
 """
-gpu_worker.py — CUDA-accelerated hash computation for CSD Solo Miner.
+gpu_worker.py — CSD 单机 GPU 矿工 · CUDA 加速计算模块
 
-Provides two main operations:
-  1. find_nonce()       — searches for a nonce whose hash meets the difficulty target
-  2. score_proposals()  — evaluates a batch of proposals and returns confidence scores
+提供两个核心功能：
+  1. 搜索随机数()  — 并行搜索满足难度目标的 SHA-256(轮次||随机数) 哈希
+  2. 评分提案()    — 批量评估提案并返回置信度分数
 
-Falls back to CPU (hashlib) when CUDA is unavailable.
+无 GPU 时自动退回 CPU（hashlib）模式。
 """
 
 import hashlib
-import json
 import logging
-import os
 import struct
 import time
 from typing import Optional
 
-log = logging.getLogger("csd-miner.gpu")
+日志 = logging.getLogger("csd-矿工.gpu")
 
-# ── Optional CUDA imports ─────────────────────────────────────────────────────
+# ── CUDA 库导入 ────────────────────────────────────────────────────────────────
 
 try:
     import cupy as cp
     import numpy as np
-    CUDA_AVAILABLE = True
-    log.info("CuPy loaded — GPU mining enabled")
+    CUDA可用 = True
+    CUPY可用 = True
+    日志.info("已加载 CuPy — GPU 挖矿已启用")
 except ImportError:
     try:
         import pycuda.autoinit  # noqa: F401
         import pycuda.driver as cuda
         from pycuda.compiler import SourceModule
         import numpy as np
-        CUDA_AVAILABLE = True
-        CUPY_AVAILABLE = False
-        log.info("PyCUDA loaded — GPU mining enabled (pycuda backend)")
+        CUDA可用 = True
+        CUPY可用 = False
+        日志.info("已加载 PyCUDA — GPU 挖矿已启用（pycuda 后端）")
     except ImportError:
         import numpy as np
-        CUDA_AVAILABLE = False
-        log.warning("No CUDA backend found — falling back to CPU mining")
+        CUDA可用 = False
+        CUPY可用 = False
+        日志.warning("未找到 CUDA 支持库，切换至 CPU 挖矿模式（速度较慢）")
 
 
-# ── CUDA kernel source ────────────────────────────────────────────────────────
+# ── CUDA 内核源码 ─────────────────────────────────────────────────────────────
+# 每个 CUDA 线程计算 SHA-256(轮次字节 || 随机数字节)，
+# 并与难度目标比较。第一个找到合法随机数的线程将结果写入输出缓冲区。
 
-# Each thread computes SHA-256(epoch_bytes || nonce_bytes) and checks if the
-# resulting hash is below the difficulty target.  The first thread to find a
-# valid nonce writes it to the output buffer.
-
-CUDA_KERNEL = r"""
+CUDA内核 = r"""
 #include <stdint.h>
 #include <string.h>
-
-// ── SHA-256 implementation ─────────────────────────────────────────────────
 
 __device__ __constant__ uint32_t K[64] = {
     0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,
@@ -71,268 +67,244 @@ __device__ __constant__ uint32_t K[64] = {
     0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2,
 };
 
-#define ROTR(x, n) (((x) >> (n)) | ((x) << (32-(n))))
-#define CH(x,y,z)  (((x) & (y)) ^ (~(x) & (z)))
-#define MAJ(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
-#define EP0(x)     (ROTR(x,2)  ^ ROTR(x,13) ^ ROTR(x,22))
-#define EP1(x)     (ROTR(x,6)  ^ ROTR(x,11) ^ ROTR(x,25))
-#define SIG0(x)    (ROTR(x,7)  ^ ROTR(x,18) ^ ((x) >> 3))
-#define SIG1(x)    (ROTR(x,17) ^ ROTR(x,19) ^ ((x) >> 10))
+#define ROTR(x,n) (((x)>>(n))|((x)<<(32-(n))))
+#define CH(x,y,z) (((x)&(y))^(~(x)&(z)))
+#define MAJ(x,y,z) (((x)&(y))^((x)&(z))^((y)&(z)))
+#define EP0(x) (ROTR(x,2)^ROTR(x,13)^ROTR(x,22))
+#define EP1(x) (ROTR(x,6)^ROTR(x,11)^ROTR(x,25))
+#define SIG0(x) (ROTR(x,7)^ROTR(x,18)^((x)>>3))
+#define SIG1(x) (ROTR(x,17)^ROTR(x,19)^((x)>>10))
 
-__device__ void sha256_block(
-    const uint8_t* data, uint32_t len, uint8_t* digest
-) {
+__device__ void sha256(const uint8_t* data, uint32_t len, uint8_t* digest) {
     uint32_t h[8] = {
         0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
         0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19,
     };
-
-    // Single-block SHA-256 (max 55 bytes of data)
     uint8_t block[64];
-    memset(block, 0, 64);
-    for (uint32_t i = 0; i < len && i < 64; i++) block[i] = data[i];
-    block[len] = 0x80;
-    uint64_t bit_len = (uint64_t)len * 8;
-    for (int i = 0; i < 8; i++)
-        block[63 - i] = (uint8_t)(bit_len >> (i * 8));
-
+    memset(block,0,64);
+    for(uint32_t i=0;i<len&&i<64;i++) block[i]=data[i];
+    block[len]=0x80;
+    uint64_t bits=(uint64_t)len*8;
+    for(int i=0;i<8;i++) block[63-i]=(uint8_t)(bits>>(i*8));
     uint32_t w[64];
-    for (int i = 0; i < 16; i++) {
-        w[i] = ((uint32_t)block[i*4]   << 24) |
-               ((uint32_t)block[i*4+1] << 16) |
-               ((uint32_t)block[i*4+2] <<  8) |
-               ((uint32_t)block[i*4+3]);
-    }
-    for (int i = 16; i < 64; i++)
-        w[i] = SIG1(w[i-2]) + w[i-7] + SIG0(w[i-15]) + w[i-16];
-
+    for(int i=0;i<16;i++)
+        w[i]=((uint32_t)block[i*4]<<24)|((uint32_t)block[i*4+1]<<16)|
+             ((uint32_t)block[i*4+2]<<8)|((uint32_t)block[i*4+3]);
+    for(int i=16;i<64;i++)
+        w[i]=SIG1(w[i-2])+w[i-7]+SIG0(w[i-15])+w[i-16];
     uint32_t a=h[0],b=h[1],c=h[2],d=h[3],e=h[4],f=h[5],g=h[6],hh=h[7];
-    for (int i = 0; i < 64; i++) {
-        uint32_t t1 = hh + EP1(e) + CH(e,f,g) + K[i] + w[i];
-        uint32_t t2 = EP0(a) + MAJ(a,b,c);
-        hh=g; g=f; f=e; e=d+t1;
-        d=c;  c=b; b=a; a=t1+t2;
+    for(int i=0;i<64;i++){
+        uint32_t t1=hh+EP1(e)+CH(e,f,g)+K[i]+w[i];
+        uint32_t t2=EP0(a)+MAJ(a,b,c);
+        hh=g;g=f;f=e;e=d+t1;d=c;c=b;b=a;a=t1+t2;
     }
-    h[0]+=a; h[1]+=b; h[2]+=c; h[3]+=d;
-    h[4]+=e; h[5]+=f; h[6]+=g; h[7]+=hh;
-
-    for (int i = 0; i < 8; i++) {
-        digest[i*4]   = (h[i] >> 24) & 0xff;
-        digest[i*4+1] = (h[i] >> 16) & 0xff;
-        digest[i*4+2] = (h[i] >>  8) & 0xff;
-        digest[i*4+3] =  h[i]        & 0xff;
+    h[0]+=a;h[1]+=b;h[2]+=c;h[3]+=d;
+    h[4]+=e;h[5]+=f;h[6]+=g;h[7]+=hh;
+    for(int i=0;i<8;i++){
+        digest[i*4]=(h[i]>>24)&0xff;
+        digest[i*4+1]=(h[i]>>16)&0xff;
+        digest[i*4+2]=(h[i]>>8)&0xff;
+        digest[i*4+3]=h[i]&0xff;
     }
 }
 
-// ── Main kernel ────────────────────────────────────────────────────────────
-
-__global__ void mine_nonces(
-    const uint8_t* epoch_bytes,   // 8-byte epoch (big-endian int64)
-    uint64_t       nonce_start,   // first nonce this batch
-    uint32_t       batch_size,    // nonces per batch
-    const uint8_t* target,        // 32-byte difficulty target
-    int64_t*       found_nonce,   // output: -1 or winning nonce
-    uint8_t*       found_hash     // output: 32-byte hash of winning nonce
+__global__ void 搜索随机数内核(
+    const uint8_t* 轮次字节,
+    uint64_t       起始随机数,
+    uint32_t       批量大小,
+    const uint8_t* 难度目标,
+    int64_t*       找到的随机数,
+    uint8_t*       找到的哈希
 ) {
     uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    if (tid >= batch_size) return;
+    if(tid >= 批量大小) return;
+    uint64_t 随机数 = 起始随机数 + tid;
 
-    uint64_t nonce = nonce_start + tid;
+    // 输入：轮次(8字节) || 随机数(8字节) = 16字节
+    uint8_t 输入[16];
+    for(int i=0;i<8;i++) 输入[i]=轮次字节[i];
+    for(int i=0;i<8;i++) 输入[8+i]=(uint8_t)((随机数>>(56-i*8))&0xff);
 
-    // Build input: epoch_bytes (8) || nonce (8) = 16 bytes
-    uint8_t input[16];
-    for (int i = 0; i < 8; i++) input[i]     = epoch_bytes[i];
-    for (int i = 0; i < 8; i++) input[8 + i] = (uint8_t)((nonce >> (56 - i*8)) & 0xff);
+    uint8_t 摘要[32];
+    sha256(输入, 16, 摘要);
 
-    uint8_t digest[32];
-    sha256_block(input, 16, digest);
-
-    // Check if hash < target (big-endian comparison)
-    for (int i = 0; i < 32; i++) {
-        if (digest[i] < target[i]) {
-            // Valid nonce found — use atomic to claim it
-            if (atomicCAS((unsigned long long*)found_nonce,
-                          (unsigned long long)(-1LL),
-                          (unsigned long long)nonce) == (unsigned long long)(-1LL)) {
-                for (int j = 0; j < 32; j++) found_hash[j] = digest[j];
+    for(int i=0;i<32;i++){
+        if(摘要[i] < 难度目标[i]){
+            if(atomicCAS((unsigned long long*)找到的随机数,
+                         (unsigned long long)(-1LL),
+                         (unsigned long long)随机数) == (unsigned long long)(-1LL)){
+                for(int j=0;j<32;j++) 找到的哈希[j]=摘要[j];
             }
             return;
         }
-        if (digest[i] > target[i]) return;
+        if(摘要[i] > 难度目标[i]) return;
     }
 }
 """
 
 
-# ── GPUWorker class ───────────────────────────────────────────────────────────
+# ── GPU工作器类 ───────────────────────────────────────────────────────────────
 
-class GPUWorker:
+class GPU工作器:
     def __init__(
         self,
-        device_id: int = 0,
-        threads_per_block: int = 256,
-        max_blocks: int = 4096,
-        batch_size: int = 65536,
+        设备编号: int = 0,
+        每块线程数: int = 256,
+        最大块数: int = 4096,
+        批量大小: int = 65536,
     ):
-        self.device_id = device_id
-        self.threads_per_block = threads_per_block
-        self.max_blocks = max_blocks
-        self.batch_size = batch_size
-        self._use_cupy = False
-        self._use_pycuda = False
-        self._kernel_fn = None
+        self.设备编号 = 设备编号
+        self.每块线程数 = 每块线程数
+        self.最大块数 = 最大块数
+        self.批量大小 = 批量大小
+        self._使用cupy = False
+        self._内核函数 = None
 
-    def initialize(self):
-        """Detect GPU, print device info, and compile CUDA kernel."""
-        global CUDA_AVAILABLE
+    def 初始化(self):
+        """检测显卡，打印设备信息，编译 CUDA 内核。"""
+        global CUDA可用
 
-        if not CUDA_AVAILABLE:
-            log.warning("GPU unavailable — using CPU mining (significantly slower)")
+        if not CUDA可用:
+            日志.warning("无 GPU，使用 CPU 挖矿模式（速度较慢）")
             return
 
         try:
             import cupy as cp
-            cp.cuda.Device(self.device_id).use()
-            props = cp.cuda.runtime.getDeviceProperties(self.device_id)
-            name = props["name"].decode()
-            vram_mb = props["totalGlobalMem"] // (1024 * 1024)
-            sm_major = props["major"]
-            sm_minor = props["minor"]
-            # Approximate CUDA cores from SM count × cores/SM
-            mp = props["multiProcessorCount"]
-            cores_per_sm = {(8, 6): 128, (8, 0): 64, (7, 5): 64, (7, 0): 64}.get(
-                (sm_major, sm_minor), 128
+            cp.cuda.Device(self.设备编号).use()
+            属性 = cp.cuda.runtime.getDeviceProperties(self.设备编号)
+            名称 = 属性["name"].decode()
+            显存MB = 属性["totalGlobalMem"] // (1024 * 1024)
+            SM主版本 = 属性["major"]
+            SM次版本 = 属性["minor"]
+            多处理器数 = 属性["multiProcessorCount"]
+            每SM核心数 = {(8,6):128,(8,0):64,(7,5):64,(7,0):64}.get(
+                (SM主版本, SM次版本), 128
             )
-            total_cores = mp * cores_per_sm
+            总核心数 = 多处理器数 * 每SM核心数
 
-            log.info("GPU | Detected CUDA device(s):")
-            log.info(
-                "GPU |   [%d] %s  |  VRAM: %d MB  |  SM: %d.%d  |  Cores: ~%d",
-                self.device_id, name, vram_mb, sm_major, sm_minor, total_cores,
+            日志.info("GPU | 检测到 CUDA 显卡：")
+            日志.info(
+                "GPU |   [%d] %s  |  显存: %d MB  |  算力: %d.%d  |  CUDA核心: ~%d",
+                self.设备编号, 名称, 显存MB, SM主版本, SM次版本, 总核心数,
             )
-            log.info("GPU | Using device %d", self.device_id)
+            日志.info("GPU | 使用设备 %d", self.设备编号)
 
-            # Compile kernel via CuPy RawKernel
-            self._kernel_fn = cp.RawKernel(CUDA_KERNEL, "mine_nonces")
-            self._use_cupy = True
+            self._内核函数 = cp.RawKernel(CUDA内核, "搜索随机数内核")
+            self._使用cupy = True
 
-        except Exception as exc:
-            log.warning("CuPy init failed (%s) — falling back to CPU", exc)
-            CUDA_AVAILABLE = False
+        except Exception as 异常:
+            日志.warning("CuPy 初始化失败（%s），切换至 CPU 模式", 异常)
+            CUDA可用 = False
 
-    def _target_bytes(self, difficulty_hex: str) -> bytes:
-        """Convert a '0x...' hex difficulty target to 32 raw bytes."""
-        h = difficulty_hex.replace("0x", "").replace("0X", "")
+    def _难度字节(self, 难度十六进制: str) -> bytes:
+        h = 难度十六进制.replace("0x", "").replace("0X", "")
         return bytes.fromhex(h.zfill(64))
 
-    # ── find_nonce ────────────────────────────────────────────────────────────
+    # ── 搜索随机数 ─────────────────────────────────────────────────────────────
 
-    def find_nonce(self, epoch: int, difficulty_hex: str) -> tuple[int, str]:
+    def 搜索随机数(self, 轮次: int, 难度十六进制: str) -> tuple[int, str]:
         """
-        Search for a nonce whose SHA-256(epoch || nonce) < difficulty target.
-        Returns (nonce, hash_hex).
+        搜索满足 SHA-256(轮次 || 随机数) < 难度目标 的随机数。
+        返回 (随机数, 哈希十六进制字符串)。
         """
-        if self._use_cupy:
-            return self._find_nonce_gpu(epoch, difficulty_hex)
-        return self._find_nonce_cpu(epoch, difficulty_hex)
+        if self._使用cupy:
+            return self._GPU搜索(轮次, 难度十六进制)
+        return self._CPU搜索(轮次, 难度十六进制)
 
-    def _find_nonce_gpu(self, epoch: int, difficulty_hex: str) -> tuple[int, str]:
+    def _GPU搜索(self, 轮次: int, 难度十六进制: str) -> tuple[int, str]:
         import cupy as cp
 
-        target_bytes = self._target_bytes(difficulty_hex)
-        epoch_bytes = struct.pack(">q", epoch)
+        难度 = self._难度字节(难度十六进制)
+        轮次字节 = struct.pack(">q", 轮次)
 
-        d_epoch  = cp.array(list(epoch_bytes), dtype=cp.uint8)
-        d_target = cp.array(list(target_bytes), dtype=cp.uint8)
+        d_轮次  = cp.array(list(轮次字节), dtype=cp.uint8)
+        d_难度  = cp.array(list(难度),     dtype=cp.uint8)
 
-        nonce_start = 0
+        起始随机数 = 0
         while True:
-            d_found_nonce = cp.array([-1], dtype=cp.int64)
-            d_found_hash  = cp.zeros(32, dtype=cp.uint8)
+            d_找到随机数 = cp.array([-1], dtype=cp.int64)
+            d_找到哈希   = cp.zeros(32,   dtype=cp.uint8)
 
-            blocks = min(self.max_blocks, (self.batch_size + self.threads_per_block - 1) // self.threads_per_block)
-            self._kernel_fn(
-                (blocks,), (self.threads_per_block,),
-                (d_epoch, cp.uint64(nonce_start), cp.uint32(self.batch_size),
-                 d_target, d_found_nonce, d_found_hash),
+            块数 = min(self.最大块数, (self.批量大小 + self.每块线程数 - 1) // self.每块线程数)
+            self._内核函数(
+                (块数,), (self.每块线程数,),
+                (d_轮次, cp.uint64(起始随机数), cp.uint32(self.批量大小),
+                 d_难度, d_找到随机数, d_找到哈希),
             )
             cp.cuda.Stream.null.synchronize()
 
-            found = int(d_found_nonce[0])
-            if found != -1:
-                hash_hex = "".join(f"{b:02x}" for b in d_found_hash.tolist())
-                return found, hash_hex
+            找到 = int(d_找到随机数[0])
+            if 找到 != -1:
+                哈希 = "".join(f"{b:02x}" for b in d_找到哈希.tolist())
+                return 找到, 哈希
 
-            nonce_start += self.batch_size
+            起始随机数 += self.批量大小
 
-    def _find_nonce_cpu(self, epoch: int, difficulty_hex: str) -> tuple[int, str]:
-        target = bytes.fromhex(difficulty_hex.replace("0x", "").zfill(64))
-        epoch_bytes = struct.pack(">q", epoch)
-        nonce = 0
+    def _CPU搜索(self, 轮次: int, 难度十六进制: str) -> tuple[int, str]:
+        难度 = bytes.fromhex(难度十六进制.replace("0x", "").zfill(64))
+        轮次字节 = struct.pack(">q", 轮次)
+        随机数 = 0
         while True:
-            nonce_bytes = struct.pack(">q", nonce)
-            h = hashlib.sha256(epoch_bytes + nonce_bytes).digest()
-            if h < target:
-                return nonce, h.hex()
-            nonce += 1
+            随机数字节 = struct.pack(">q", 随机数)
+            h = hashlib.sha256(轮次字节 + 随机数字节).digest()
+            if h < 难度:
+                return 随机数, h.hex()
+            随机数 += 1
 
-    # ── score_proposals ───────────────────────────────────────────────────────
+    # ── 评分提案 ───────────────────────────────────────────────────────────────
 
-    def score_proposals(self, proposals: list[dict]) -> list[dict]:
+    def 评分提案(self, 提案列表: list[dict]) -> list[dict]:
         """
-        Evaluate a list of proposals and return them with GPU-computed scores.
-        Uses vectorized numpy operations (or CUDA for large batches).
+        批量评估提案，返回带 score 和 confidence 字段的列表。
         """
-        if not proposals:
+        if not 提案列表:
             return []
+        if self._使用cupy:
+            return self._GPU评分(提案列表)
+        return self._CPU评分(提案列表)
 
-        if self._use_cupy:
-            return self._score_gpu(proposals)
-        return self._score_cpu(proposals)
-
-    def _score_gpu(self, proposals: list[dict]) -> list[dict]:
+    def _GPU评分(self, 提案列表: list[dict]) -> list[dict]:
         import cupy as cp
 
-        ids    = [p.get("id", "") for p in proposals]
-        hashes = [p.get("hash", "0" * 64) for p in proposals]
+        IDs   = [p.get("id", "") for p in 提案列表]
+        哈希列表 = [p.get("hash", "0" * 64) for p in 提案列表]
 
-        # Convert first 8 bytes of each hash to uint64 for numeric scoring
-        vals = cp.array(
-            [int(h[:16], 16) if len(h) >= 16 else 0 for h in hashes],
+        数值 = cp.array(
+            [int(h[:16], 16) if len(h) >= 16 else 0 for h in 哈希列表],
             dtype=cp.float64,
         )
-        max_val = float(vals.max()) or 1.0
-        scores = (1.0 - vals / max_val).tolist()
+        最大值 = float(数值.max()) or 1.0
+        分数列表 = (1.0 - 数值 / 最大值).tolist()
 
-        result = []
-        for i, p in enumerate(proposals):
-            result.append({
-                "id": ids[i],
-                "score": round(scores[i], 6),
-                "confidence": round(min(scores[i] + 0.05, 1.0), 6),
+        结果 = []
+        for i, p in enumerate(提案列表):
+            结果.append({
+                "id": IDs[i],
+                "score": round(分数列表[i], 6),
+                "confidence": round(min(分数列表[i] + 0.05, 1.0), 6),
             })
-        return result
+        return 结果
 
-    def _score_cpu(self, proposals: list[dict]) -> list[dict]:
-        result = []
-        for p in proposals:
+    def _CPU评分(self, 提案列表: list[dict]) -> list[dict]:
+        结果 = []
+        for p in 提案列表:
             h = p.get("hash", "0" * 64)
-            val = int(h[:16], 16) if len(h) >= 16 else 0
-            score = 1.0 - (val / (2 ** 64))
-            result.append({
+            数值 = int(h[:16], 16) if len(h) >= 16 else 0
+            分数 = 1.0 - (数值 / (2 ** 64))
+            结果.append({
                 "id": p.get("id", ""),
-                "score": round(score, 6),
-                "confidence": round(min(score + 0.05, 1.0), 6),
+                "score": round(分数, 6),
+                "confidence": round(min(分数 + 0.05, 1.0), 6),
             })
-        return result
+        return 结果
 
-    # ── cleanup ───────────────────────────────────────────────────────────────
+    # ── 关闭 ──────────────────────────────────────────────────────────────────
 
-    def shutdown(self):
-        if self._use_cupy:
+    def 关闭(self):
+        if self._使用cupy:
             try:
                 import cupy as cp
-                cp.cuda.Device(self.device_id).synchronize()
-                log.info("GPU device %d released", self.device_id)
+                cp.cuda.Device(self.设备编号).synchronize()
+                日志.info("显卡设备 %d 已释放", self.设备编号)
             except Exception:
                 pass
