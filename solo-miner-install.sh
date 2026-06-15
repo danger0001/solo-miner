@@ -84,10 +84,19 @@ check_system() {
         exit 1
     fi
 
+    # 检查Python
+    if ! command -v python3 &> /dev/null; then
+        log_error "未找到 Python3，请先安装 Python 3.9+"
+        exit 1
+    fi
+
+    PY_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
+    log_info "Python 版本: $PY_VERSION"
+
     # 检查GPU
     if ! command -v nvidia-smi &> /dev/null; then
         log_warn "未检测到 NVIDIA GPU 或驱动未安装"
-        log_warn "GPU挖矿需要安装 NVIDIA 驱动"
+        log_warn "GPU挖矿需要安装 NVIDIA 驱动，否则将使用 CPU 模式"
     else
         log_info "检测到 NVIDIA GPU:"
         nvidia-smi --query-gpu=name --format=csv,noheader
@@ -96,49 +105,6 @@ check_system() {
     log_info "系统检查完成"
 }
 
-# 安装依赖
-install_dependencies() {
-    log_info "安装系统依赖..."
-
-    # 检测包管理器
-    if command -v apt-get &> /dev/null; then
-        sudo apt-get update
-        sudo apt-get install -y curl wget git build-essential cmake \
-            libssl-dev pkg-config libclang-dev clang
-    elif command -v yum &> /dev/null; then
-        sudo yum install -y curl wget git gcc gcc-c++ make cmake \
-            openssl-devel pkgconfig clang
-    else
-        log_error "不支持的包管理器"
-        exit 1
-    fi
-
-    log_info "依赖安装完成"
-}
-
-# 安装 Rust
-install_rust() {
-    if command -v rustc &> /dev/null; then
-        log_info "Rust 已安装: $(rustc --version)"
-        return
-    fi
-
-    log_info "安装 Rust..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    source "$HOME/.cargo/env"
-    log_info "Rust 安装完成"
-}
-
-# 安装 CUDA (可选)
-install_cuda() {
-    if command -v nvcc &> /dev/null; then
-        log_info "CUDA 已安装: $(nvcc --version | grep release)"
-        return
-    fi
-
-    log_warn "未检测到 CUDA，跳过 GPU 优化"
-    log_info "如需GPU挖矿，请手动安装 CUDA Toolkit: https://developer.nvidia.com/cuda-downloads"
-}
 
 # 创建项目子目录
 create_directories() {
@@ -150,112 +116,121 @@ create_directories() {
     log_info "项目目录创建完成: $INSTALL_DIR"
 }
 
-# 下载或克隆项目
+# 下载项目文件
 download_project() {
-    log_info "下载 CSD Solo Miner 项目..."
+    log_info "下载 CSD Solo Miner 项目文件..."
 
     cd "$INSTALL_DIR"
 
-    # 如果已存在源码，先清理
-    if [ -d "compute-substrate" ]; then
-        log_warn "清理旧的源码..."
-        rm -rf compute-substrate
-    fi
+    # 下载挖矿程序和相关文件
+    local base_url="https://raw.githubusercontent.com/danger0001/solo-miner/main"
 
-    # 克隆仓库
-    git clone https://github.com/ComputeSubstrate/compute-substrate.git
-    cd compute-substrate
+    log_info "下载挖矿程序..."
+    curl -fsSL "$base_url/miner.py" -o miner.py
+    curl -fsSL "$base_url/gpu_worker.py" -o gpu_worker.py
+    curl -fsSL "$base_url/node_selector.py" -o node_selector.py
+    curl -fsSL "$base_url/requirements.txt" -o requirements.txt
 
-    log_info "项目下载完成"
+    chmod +x miner.py
+
+    log_info "项目文件下载完成"
 }
 
-# 编译项目
-build_project() {
-    log_info "编译项目 (这可能需要较长时间)..."
+# 安装Python依赖
+install_python_deps() {
+    log_info "安装 Python 依赖..."
 
-    cd "$INSTALL_DIR/compute-substrate"
+    cd "$INSTALL_DIR"
 
-    # 更新 Rust 工具链
-    rustup update stable
-    rustup target add wasm32-unknown-unknown
-
-    # 编译（启用 GPU 特性）
-    if command -v nvcc &> /dev/null; then
-        log_info "使用 GPU 特性编译..."
-        cargo build --release --features gpu-mining
-    else
-        log_warn "使用 CPU 模式编译..."
-        cargo build --release
+    # 检查Python版本
+    if ! command -v python3 &> /dev/null; then
+        log_error "未找到 Python3，请先安装 Python 3.9+"
+        exit 1
     fi
 
-    # 复制编译好的二进制文件
-    cp target/release/compute-substrate "$INSTALL_DIR/bin/compute-substrate"
+    # 安装pip（如果需要）
+    if ! command -v pip3 &> /dev/null; then
+        log_info "安装 pip..."
+        python3 -m ensurepip --upgrade || curl -sS https://bootstrap.pypa.io/get-pip.py | python3
+    fi
 
-    log_info "编译完成"
+    # 安装依赖
+    log_info "安装 Python 包..."
+    pip3 install -r requirements.txt
+
+    # 检测GPU并安装相应的CuPy版本
+    if command -v nvcc &> /dev/null; then
+        CUDA_VERSION=$(nvcc --version | grep "release" | sed 's/.*release \([0-9]*\)\..*/\1/')
+        log_info "检测到 CUDA $CUDA_VERSION，安装 GPU 支持..."
+        pip3 install cupy-cuda${CUDA_VERSION}x || pip3 install cupy
+    else
+        log_warn "未检测到 CUDA，将使用 CPU 模式"
+    fi
+
+    log_info "Python 依赖安装完成"
 }
 
 # 生成配置文件
 generate_config() {
     log_info "生成配置文件..."
 
-    cd "$INSTALL_DIR/config"
+    cd "$INSTALL_DIR"
 
-    # 生成引导节点参数
-    BOOTSTRAP_PARAMS=""
+    # 生成引导节点列表（YAML格式）
+    BOOTSTRAP_LIST=""
     for node in "${BOOTSTRAP_NODES[@]}"; do
-        BOOTSTRAP_PARAMS="$BOOTSTRAP_PARAMS --bootnodes $node"
+        BOOTSTRAP_LIST="${BOOTSTRAP_LIST}  - \"$node\"\n"
     done
 
     # 创建配置文件
-    cat > miner-config.toml <<EOF
+    cat > config.yaml <<EOF
 # CSD Solo Miner 配置文件
 
-[miner]
-wallet_address = "$WALLET_ADDRESS"
+矿工:
+  钱包地址: "$WALLET_ADDRESS"
+  挖矿域: "compute"
+  工作器名称: "solo-worker-01"
 
-[network]
-bootstrap_nodes = [
-$(printf '    "%s",\n' "${BOOTSTRAP_NODES[@]}" | sed '$ s/,$//')
-]
+节点:
+  数据目录: "./data"
+  RPC端口: 8789
+  P2P端口: 18007
 
-[mining]
-# GPU 设置
-use_gpu = true
-gpu_device = 0
+GPU:
+  设备编号: 0
+  每块线程数: 256
+  最大块数: 4096
+  批量大小: 65536
 
-# CPU 线程数（如果不使用GPU）
-cpu_threads = 4
+挖矿:
+  提案间隔秒数: 12
+  认证间隔秒数: 6
 
-# 最优节点模式（低带宽模式）
-low_bandwidth_mode = true
-use_single_best_node = true
+引导节点:
+$(echo -e "$BOOTSTRAP_LIST")
 
-[paths]
-data_dir = "$INSTALL_DIR/data"
-log_dir = "$INSTALL_DIR/logs"
+低带宽模式: true
 EOF
 
     # 创建启动脚本
-    cat > "$INSTALL_DIR/start.sh" <<EOF
+    cat > start.sh <<'STARTEOF'
 #!/bin/bash
 
-cd "$INSTALL_DIR"
+cd "$(dirname "$0")"
 
 # 设置日志文件
-LOG_FILE="logs/miner-\$(date +%Y%m%d-%H%M%S).log"
+mkdir -p logs
+LOG_FILE="logs/miner-$(date +%Y%m%d-%H%M%S).log"
 
-# 启动挖矿节点
-./bin/compute-substrate \\
-    --miner \\
-    --miner-address $WALLET_ADDRESS \\
-    --base-path ./data \\
-    $BOOTSTRAP_PARAMS \\
-    --enable-low-bandwidth-mode \\
-    --single-best-node \\
-    2>&1 | tee "\$LOG_FILE"
-EOF
+echo "启动 CSD Solo Miner..."
+echo "日志文件: $LOG_FILE"
+echo ""
 
-    chmod +x "$INSTALL_DIR/start.sh"
+# 启动挖矿程序
+python3 miner.py 2>&1 | tee "$LOG_FILE"
+STARTEOF
+
+    chmod +x start.sh
 
     log_info "配置文件生成完成"
 }
@@ -264,21 +239,23 @@ EOF
 create_management_scripts() {
     log_info "创建管理脚本..."
 
+    cd "$INSTALL_DIR"
+
     # 停止脚本
-    cat > "$INSTALL_DIR/stop.sh" <<'EOF'
+    cat > stop.sh <<'EOF'
 #!/bin/bash
-pkill -f "compute-substrate.*--miner"
+pkill -f "python3.*miner.py"
 echo "挖矿进程已停止"
 EOF
 
     # 查看状态脚本
-    cat > "$INSTALL_DIR/status.sh" <<'EOF'
+    cat > status.sh <<'EOF'
 #!/bin/bash
-if pgrep -f "compute-substrate.*--miner" > /dev/null; then
+if pgrep -f "python3.*miner.py" > /dev/null; then
     echo "✓ 挖矿进程正在运行"
     echo ""
     echo "进程信息:"
-    ps aux | grep "compute-substrate.*--miner" | grep -v grep
+    ps aux | grep "python3.*miner.py" | grep -v grep
     echo ""
     echo "最新日志:"
     tail -n 20 logs/*.log 2>/dev/null | tail -20
@@ -288,7 +265,7 @@ fi
 EOF
 
     # 查看日志脚本
-    cat > "$INSTALL_DIR/view-logs.sh" <<'EOF'
+    cat > view-logs.sh <<'EOF'
 #!/bin/bash
 if [ -z "$1" ]; then
     # 查看最新日志
@@ -303,7 +280,7 @@ else
 fi
 EOF
 
-    chmod +x "$INSTALL_DIR"/*.sh
+    chmod +x *.sh
 
     log_info "管理脚本创建完成"
 }
@@ -325,15 +302,20 @@ show_completion_info() {
     echo "  3. 查看状态: ./status.sh"
     echo "  4. 查看日志: ./view-logs.sh"
     echo ""
-    echo "配置文件位置: ./config/miner-config.toml"
+    echo "配置文件: ./config.yaml"
     echo ""
     echo "注意事项："
-    echo "  - 首次启动需要同步区块链数据，可能需要一些时间"
-    echo "  - 建议在 screen 或 tmux 中运行挖矿进程"
-    echo "  - 低带宽模式已启用，将只使用一个最优节点"
+    echo "  - 首次启动会自动测试引导节点并选择最优节点"
+    echo "  - 建议在 screen 或 tmux 中后台运行"
+    echo "  - 低带宽模式已启用"
     echo ""
     echo "快速启动："
     echo "  cd ~/solo && ./start.sh"
+    echo ""
+    echo "后台运行："
+    echo "  screen -S solo-miner"
+    echo "  cd ~/solo && ./start.sh"
+    echo "  # 按 Ctrl+A 然后按 D 离开"
     echo ""
     echo "========================================"
 }
@@ -347,12 +329,9 @@ main() {
 
     read_wallet_address
     check_system
-    install_dependencies
-    install_rust
-    install_cuda
     create_directories
     download_project
-    build_project
+    install_python_deps
     generate_config
     create_management_scripts
     show_completion_info
