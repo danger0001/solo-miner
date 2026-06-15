@@ -4,6 +4,16 @@
 
 ---
 
+## 快速开始
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/danger0001/csd-solo-miner/main/install.sh | bash
+```
+
+> 自动完成环境检测、依赖安装、配置生成，全程中文引导。
+
+---
+
 ## 目录
 
 - [硬件要求](#硬件要求)
@@ -39,12 +49,7 @@
 ## 一键安装
 
 ```bash
-# 克隆项目
-git clone https://github.com/danger0001/csd-solo-miner.git
-cd csd-solo-miner
-
-# 一键安装并启动（推荐）
-chmod +x install.sh && ./install.sh
+curl -fsSL https://raw.githubusercontent.com/danger0001/csd-solo-miner/main/install.sh | bash
 ```
 
 `install.sh` 会自动完成：下载 csd 节点程序、下载 genesis 文件、安装 Python 依赖、检测 GPU 并安装 CUDA 支持、生成配置文件，最后引导你填写钱包地址并启动挖矿。
