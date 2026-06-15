@@ -1,0 +1,43 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CSD Solo GPU Miner — Configuration
+# Copy this file to config.yaml and fill in your details.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Miner identity
+miner:
+  wallet_address: "YOUR_WALLET_ADDRESS_HERE"   # <-- Set this!
+  domain: "compute"                            # CSD domain to mine on
+  worker_name: "worker-01"                     # Label shown in explorer
+
+# Node settings
+node:
+  datadir: "./cs.db"         # Chain data directory (created automatically)
+  rpc_host: "0.0.0.0"        # RPC listen host (use 127.0.0.1 for local only)
+  rpc_port: 8789             # RPC listen port
+  p2p_host: "0.0.0.0"        # P2P listen host
+  p2p_port: 18007            # P2P listen port (open this in your firewall)
+  genesis: "./genesis.bin"   # Genesis file (downloaded by setup.sh)
+
+# GPU settings
+gpu:
+  device_id: 0              # CUDA device index (0 = first GPU)
+  threads_per_block: 256    # CUDA threads per block
+  max_blocks: 4096          # Max CUDA blocks per kernel launch
+  batch_size: 65536         # Nonces computed per GPU batch
+
+# Mining settings
+mining:
+  proposal_interval: 12     # Seconds between proposal submissions
+  attestation_interval: 6   # Seconds between attestation polls
+  max_retries: 5            # Max RPC retry attempts
+  difficulty_target: "0x00000FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+
+# Bootstrap nodes — all mainnet nodes listed for maximum peer discovery
+# Format: /ip4/<address>/tcp/<port>
+bootnodes:
+  - "/ip4/151.240.121.186/tcp/17999"
+  - "/ip4/151.240.121.220/tcp/17999"
+  - "/ip4/151.240.121.187/tcp/17999"
+  - "/ip4/158.69.116.36/tcp/17999"
+  - "/ip4/145.239.0.111/tcp/17999"
+  - "/ip4/151.240.121.189/tcp/17999"
