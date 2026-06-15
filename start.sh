@@ -2,10 +2,12 @@
 # start.sh — CSD 单机 GPU 矿工启动脚本
 #
 # 用法：
-#   ./start.sh                                                    # 使用 config.yaml 中的引导节点
+#   ./start.sh                                                    # 自动检测带宽，选择最优节点
 #   ./start.sh --引导节点 全部                                    # 强制使用全部主网节点
 #   ./start.sh --引导节点 "/ip4/151.240.121.186/tcp/17999"        # 指定单个节点
 #   ./start.sh --引导节点 "/ip4/A/tcp/17999,/ip4/B/tcp/17999"    # 指定多个节点
+#   ./start.sh --跳过带宽检测                                     # 跳过带宽检测，使用全部节点
+#   ./start.sh --带宽阈值 10                                      # 自定义低带宽阈值（Mbps，默认 5）
 #   ./start.sh --显卡 1                                           # 使用第二块显卡
 #   ./start.sh --仅矿工                                           # 不启动 csd 节点（使用已有节点）
 #   ./start.sh --调试                                             # 输出详细日志
@@ -38,6 +40,8 @@ set -euo pipefail
 显卡参数=""
 仅矿工=""
 调试参数=""
+跳过带宽=""
+带宽阈值=""
 配置文件="config.yaml"
 其他参数=()
 
@@ -51,6 +55,10 @@ while [[ $# -gt 0 ]]; do
             仅矿工="--no-node"; shift ;;
         --调试|--debug)
             调试参数="--debug"; shift ;;
+        --跳过带宽检测|--skip-bw)
+            跳过带宽="--skip-bw"; shift ;;
+        --带宽阈值|--bw-threshold)
+            带宽阈值="--bw-threshold $2"; shift 2 ;;
         --配置|--config)
             配置文件="$2"; shift 2 ;;
         *)
@@ -103,7 +111,7 @@ echo -e "${绿}   CSD 单机 GPU 矿工  ·  正在启动      ${重置}"
 echo -e "${绿}════════════════════════════════════════${重置}"
 echo ""
 
-CMD="python3 miner.py --config ${配置文件} ${引导节点标志} ${显卡标志} ${仅矿工} ${调试参数}"
+CMD="python3 miner.py --config ${配置文件} ${引导节点标志} ${显卡标志} ${仅矿工} ${调试参数} ${跳过带宽} ${带宽阈值}"
 信息 "执行命令：$CMD"
 echo ""
 
