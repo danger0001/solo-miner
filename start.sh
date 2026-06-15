@@ -14,19 +14,19 @@
 #
 set -euo pipefail
 
-红='\033[0;31m'
-绿='\033[0;32m'
-黄='\033[1;33m'
-青='\033[0;36m'
-重置='\033[0m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+RESET='\033[0m'
 
-信息()  { echo -e "${青}[信息]${重置} $*"; }
-成功()  { echo -e "${绿}[完成]${重置} $*"; }
-警告()  { echo -e "${黄}[警告]${重置} $*"; }
-错误()  { echo -e "${红}[错误]${重置} $*"; exit 1; }
+log_info()  { echo -e "${CYAN}[信息]${RESET} $*"; }
+log_ok()    { echo -e "${GREEN}[完成]${RESET} $*"; }
+log_warn()  { echo -e "${YELLOW}[警告]${RESET} $*"; }
+log_err()   { echo -e "${RED}[错误]${RESET} $*"; exit 1; }
 
 # ── 主网引导节点 ──────────────────────────────────────────────────────────────
-主网引导节点=(
+MAINNET_NODES=(
     "/ip4/151.240.121.186/tcp/17999"
     "/ip4/151.240.121.220/tcp/17999"
     "/ip4/151.240.121.187/tcp/17999"
@@ -36,83 +36,83 @@ set -euo pipefail
 )
 
 # ── 解析参数 ──────────────────────────────────────────────────────────────────
-引导节点参数=""
-显卡参数=""
-仅矿工=""
-调试参数=""
-跳过带宽=""
-带宽阈值=""
-配置文件="config.yaml"
-其他参数=()
+ARG_BOOTNODES=""
+ARG_GPU=""
+ARG_NO_NODE=""
+ARG_DEBUG=""
+ARG_SKIP_BW=""
+ARG_BW_THRESHOLD=""
+CONFIG_FILE="config.yaml"
+EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --引导节点|--bootnodes)
-            引导节点参数="$2"; shift 2 ;;
+            ARG_BOOTNODES="$2"; shift 2 ;;
         --显卡|--gpu)
-            显卡参数="$2"; shift 2 ;;
+            ARG_GPU="$2"; shift 2 ;;
         --仅矿工|--no-node)
-            仅矿工="--no-node"; shift ;;
+            ARG_NO_NODE="--no-node"; shift ;;
         --调试|--debug)
-            调试参数="--debug"; shift ;;
+            ARG_DEBUG="--debug"; shift ;;
         --跳过带宽检测|--skip-bw)
-            跳过带宽="--skip-bw"; shift ;;
+            ARG_SKIP_BW="--skip-bw"; shift ;;
         --带宽阈值|--bw-threshold)
-            带宽阈值="--bw-threshold $2"; shift 2 ;;
+            ARG_BW_THRESHOLD="--bw-threshold $2"; shift 2 ;;
         --配置|--config)
-            配置文件="$2"; shift 2 ;;
+            CONFIG_FILE="$2"; shift 2 ;;
         *)
-            其他参数+=("$1"); shift ;;
+            EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
 # ── 启动前检查 ────────────────────────────────────────────────────────────────
-[[ -f "$配置文件" ]]  || 错误 "配置文件 $配置文件 不存在，请先运行：./install.sh"
-[[ -f "csd" ]]        || 错误 "csd 程序不存在，请先运行：./install.sh"
-[[ -f "genesis.bin" ]] || 错误 "genesis.bin 不存在，请先运行：./install.sh"
-python3 --version >/dev/null 2>&1 || 错误 "未找到 python3"
-python3 -c "import aiohttp" 2>/dev/null || 错误 "缺少依赖，请运行：pip install -r requirements.txt"
+[[ -f "$CONFIG_FILE" ]]  || log_err "配置文件 $CONFIG_FILE 不存在，请先运行：./install.sh"
+[[ -f "csd" ]]           || log_err "csd 程序不存在，请先运行：./install.sh"
+[[ -f "genesis.bin" ]]   || log_err "genesis.bin 不存在，请先运行：./install.sh"
+python3 --version >/dev/null 2>&1 || log_err "未找到 python3"
+python3 -c "import aiohttp" 2>/dev/null || log_err "缺少依赖，请运行：pip install -r requirements.txt"
 
 # ── 引导节点处理 ──────────────────────────────────────────────────────────────
-if [[ -z "$引导节点参数" ]]; then
-    引导节点标志=""
-    信息 "引导节点：使用 config.yaml 中的配置"
-elif [[ "${引导节点参数,,}" == "全部" ]] || [[ "${引导节点参数,,}" == "all" ]]; then
-    BN_LIST=$(IFS=","; echo "${主网引导节点[*]}")
-    引导节点标志="--bootnodes ${BN_LIST}"
-    信息 "引导节点：全部 ${#主网引导节点[@]} 个主网节点"
-    for bn in "${主网引导节点[@]}"; do
-        信息 "  → $bn"
+if [[ -z "$ARG_BOOTNODES" ]]; then
+    BN_FLAG=""
+    log_info "引导节点：使用 config.yaml 中的配置"
+elif [[ "${ARG_BOOTNODES,,}" == "全部" ]] || [[ "${ARG_BOOTNODES,,}" == "all" ]]; then
+    BN_LIST=$(IFS=","; echo "${MAINNET_NODES[*]}")
+    BN_FLAG="--bootnodes ${BN_LIST}"
+    log_info "引导节点：全部 ${#MAINNET_NODES[@]} 个主网节点"
+    for bn in "${MAINNET_NODES[@]}"; do
+        log_info "  → $bn"
     done
 else
-    引导节点标志="--bootnodes ${引导节点参数}"
-    IFS=',' read -ra 节点数组 <<< "$引导节点参数"
-    信息 "引导节点：${#节点数组[@]} 个自定义节点"
-    for bn in "${节点数组[@]}"; do
-        信息 "  → $bn"
+    BN_FLAG="--bootnodes ${ARG_BOOTNODES}"
+    IFS=',' read -ra NODE_ARR <<< "$ARG_BOOTNODES"
+    log_info "引导节点：${#NODE_ARR[@]} 个自定义节点"
+    for bn in "${NODE_ARR[@]}"; do
+        log_info "  → $bn"
     done
 fi
 
 # ── 显卡信息 ──────────────────────────────────────────────────────────────────
 if command -v nvidia-smi &>/dev/null; then
-    设备编号="${显卡参数:-0}"
-    显卡名=$(nvidia-smi --query-gpu=name --format=csv,noheader -i "$设备编号" 2>/dev/null || echo "未知")
-    成功 "使用显卡 [$设备编号] $显卡名"
+    GPU_IDX="${ARG_GPU:-0}"
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i "$GPU_IDX" 2>/dev/null || echo "未知")
+    log_ok "使用显卡 [$GPU_IDX] $GPU_NAME"
 else
-    警告 "未检测到 NVIDIA 显卡，使用 CPU 模式"
+    log_warn "未检测到 NVIDIA 显卡，使用 CPU 模式"
 fi
 
-[[ -n "$显卡参数" ]] && 显卡标志="--gpu $显卡参数" || 显卡标志=""
+[[ -n "$ARG_GPU" ]] && GPU_FLAG="--gpu $ARG_GPU" || GPU_FLAG=""
 
 # ── 启动 ──────────────────────────────────────────────────────────────────────
 echo ""
-echo -e "${绿}════════════════════════════════════════${重置}"
-echo -e "${绿}   CSD 单机 GPU 矿工  ·  正在启动      ${重置}"
-echo -e "${绿}════════════════════════════════════════${重置}"
+echo -e "${GREEN}════════════════════════════════════════${RESET}"
+echo -e "${GREEN}   CSD 单机 GPU 矿工  ·  正在启动      ${RESET}"
+echo -e "${GREEN}════════════════════════════════════════${RESET}"
 echo ""
 
-CMD="python3 miner.py --config ${配置文件} ${引导节点标志} ${显卡标志} ${仅矿工} ${调试参数} ${跳过带宽} ${带宽阈值}"
-信息 "执行命令：$CMD"
+CMD="python3 miner.py --config ${CONFIG_FILE} ${BN_FLAG} ${GPU_FLAG} ${ARG_NO_NODE} ${ARG_DEBUG} ${ARG_SKIP_BW} ${ARG_BW_THRESHOLD}"
+log_info "执行命令：$CMD"
 echo ""
 
-exec $CMD "${其他参数[@]}"
+exec $CMD "${EXTRA_ARGS[@]}"
