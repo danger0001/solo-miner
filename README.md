@@ -2,34 +2,56 @@
 
 针对 [Compute Substrate](https://computesubstrate.org/) 网络的 GPU 加速单机挖矿工具。使用 CUDA 并行计算提案哈希，向 CSD 主网提交提案与认证，最大化挖矿收益。
 
-## 🎉 v5.1.0 更新
+## 🎉 v5.2.0 更新
 
-- ✅ **智能安装**：只需 Python 3.9+，自动检测并配置 GPU
-- ✅ **GPU 优先**：自动安装 CUDA 支持，发挥显卡最大性能
-- ✅ **CPU 备用**：无 GPU 时自动降级为 CPU 模式
-- ✅ **简化部署**：一键安装，自动配置所有依赖
-- ⚡ **最大算力**：CUDA 并行计算，比 CPU 快数百倍
+- ✅ **多合一管理**：全新 `solo.sh` 脚本，一键管理所有功能
+- ✅ **图形菜单**：友好的交互式菜单，无需记忆命令
+- ✅ **快捷操作**：安装、启动、停止、重启、状态、日志、更新一键搞定
+- ✅ **智能检测**：自动检测安装状态和运行状态
+- ⚡ **简化运维**：从安装到管理，只需一个脚本
 
 ---
 
 ## 快速开始
 
-### 一键安装（推荐）
+### 方式一：多合一管理脚本（推荐）⭐
+
+下载并运行多合一管理脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/danger0001/solo-miner/main/solo.sh -o ~/solo.sh
+chmod +x ~/solo.sh
+~/solo.sh
+```
+
+**功能菜单：**
+- [1] 安装/重新安装
+- [2] 启动挖矿
+- [3] 停止挖矿
+- [4] 重启挖矿
+- [5] 查看状态
+- [6] 查看日志（实时）
+- [7] 更新程序
+- [8] 编辑配置
+- [9] 卸载
+
+**特点：**
+- 图形化菜单，操作简单
+- 自动检测状态
+- 一键管理所有功能
+
+### 方式二：传统安装
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/danger0001/solo-miner/main/install.sh | bash
 ```
 
-安装过程中会提示您输入钱包地址，所有文件将安装到 `~/solo` 目录。
-
-### 安装完成后启动
+安装完成后手动启动：
 
 ```bash
 cd ~/solo
 ./start.sh
 ```
-
-> **v4.0.0 新功能**：自动创建 `~/solo` 文件夹，运行时交互式输入钱包地址，一行命令完成所有安装。
 
 ---
 
@@ -366,6 +388,7 @@ python miner.py --配置 config.yaml
 
 | 版本 | 说明 |
 |------|------|
+| [v5.2.0](https://github.com/danger0001/solo-miner) | ⭐ **多合一管理**：全新图形化管理脚本，一键管理所有功能 |
 | [v5.1.0](https://github.com/danger0001/solo-miner) | 🚀 **智能安装**：自动检测并配置 GPU，强化 GPU 挖矿特性 |
 | [v5.0.0](https://github.com/danger0001/solo-miner) | 简化安装流程，只需 Python 3.9+ 基础环境 |
 | [v4.0.0](https://github.com/danger0001/solo-miner) | Solo 文件夹结构，一键安装，交互式输入 |

@@ -1,8 +1,9 @@
 #!/bin/bash
 
 #############################################
-# CSD SOLO GPU 挖矿 - 一键安装脚本 v5.1.0
+# CSD SOLO GPU 挖矿 - 一键安装脚本 v5.2.0
 # GPU 优先，自动检测并配置 CUDA 支持
+# 推荐使用 solo.sh 多合一管理脚本
 #############################################
 
 # ========== 配置区域 ==========
@@ -322,7 +323,7 @@ show_completion_info() {
     log_info "安装完成！"
     echo ""
     echo "========================================"
-    echo "  CSD SOLO GPU 挖矿安装成功 v5.1.0"
+    echo "  CSD SOLO GPU 挖矿安装成功 v5.2.0"
     echo "========================================"
     echo ""
     echo "安装目录: $INSTALL_DIR"
@@ -337,7 +338,8 @@ show_completion_info() {
     echo "配置文件: ./config.yaml"
     echo ""
     echo "注意事项："
-    echo "  - v5.1.0 优先使用 GPU 挖矿，自动配置 CUDA"
+    echo "  - v5.2.0 提供多合一管理脚本，建议使用 solo.sh"
+    echo "  - GPU 挖矿优先，自动配置 CUDA"
     echo "  - 首次启动会自动测试引导节点并选择最优节点"
     echo "  - GPU 算力是 CPU 的 100-1000 倍"
     echo "  - 建议在 screen 或 tmux 中后台运行"
@@ -356,7 +358,7 @@ show_completion_info() {
 # 主函数
 main() {
     echo "========================================"
-    echo "  CSD SOLO GPU 挖矿 - 一键安装 v5.1.0"
+    echo "  CSD SOLO GPU 挖矿 - 一键安装 v5.2.0"
     echo "  GPU 优先 | 自动配置 CUDA"
     echo "========================================"
     echo ""
