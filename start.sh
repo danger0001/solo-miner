@@ -2,30 +2,21 @@
 # start.sh — CSD 单机 GPU 矿工启动脚本
 #
 # 用法：
-#   ./start.sh                                                    # 自动检测带宽，选择最优节点
-#   ./start.sh --引导节点 全部                                    # 强制使用全部主网节点
-#   ./start.sh --引导节点 "/ip4/151.240.121.186/tcp/17999"        # 指定单个节点
-#   ./start.sh --引导节点 "/ip4/A/tcp/17999,/ip4/B/tcp/17999"    # 指定多个节点
-#   ./start.sh --跳过带宽检测                                     # 跳过带宽检测，使用全部节点
-#   ./start.sh --带宽阈值 10                                      # 自定义低带宽阈值（Mbps，默认 5）
-#   ./start.sh --显卡 1                                           # 使用第二块显卡
-#   ./start.sh --仅矿工                                           # 不启动 csd 节点（使用已有节点）
-#   ./start.sh --调试                                             # 输出详细日志
+#   ./start.sh                              # 自动检测带宽，选择最优节点
+#   ./start.sh --引导节点 全部              # 强制使用全部主网节点
+#   ./start.sh --跳过带宽检测              # 跳过带宽检测，使用全部节点
+#   ./start.sh --带宽阈值 10               # 自定义低带宽阈值（Mbps，默认 5）
+#   ./start.sh --显卡 1                    # 使用第二块显卡
+#   ./start.sh --仅矿工                    # 不启动 csd 节点（使用已有节点）
+#   ./start.sh --调试                      # 输出详细日志
 #
 set -euo pipefail
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-RESET='\033[0m'
+log_info() { echo "[信息] $*"; }
+log_ok()   { echo "[完成] $*"; }
+log_warn() { echo "[警告] $*"; }
+log_err()  { echo "[错误] $*" >&2; exit 1; }
 
-log_info()  { echo -e "${CYAN}[信息]${RESET} $*"; }
-log_ok()    { echo -e "${GREEN}[完成]${RESET} $*"; }
-log_warn()  { echo -e "${YELLOW}[警告]${RESET} $*"; }
-log_err()   { echo -e "${RED}[错误]${RESET} $*"; exit 1; }
-
-# ── 主网引导节点 ──────────────────────────────────────────────────────────────
 MAINNET_NODES=(
     "/ip4/151.240.121.186/tcp/17999"
     "/ip4/151.240.121.220/tcp/17999"
@@ -35,7 +26,6 @@ MAINNET_NODES=(
     "/ip4/151.240.121.189/tcp/17999"
 )
 
-# ── 解析参数 ──────────────────────────────────────────────────────────────────
 ARG_BOOTNODES=""
 ARG_GPU=""
 ARG_NO_NODE=""
@@ -66,14 +56,12 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ── 启动前检查 ────────────────────────────────────────────────────────────────
-[[ -f "$CONFIG_FILE" ]]  || log_err "配置文件 $CONFIG_FILE 不存在，请先运行：./install.sh"
-[[ -f "csd" ]]           || log_err "csd 程序不存在，请先运行：./install.sh"
-[[ -f "genesis.bin" ]]   || log_err "genesis.bin 不存在，请先运行：./install.sh"
+[[ -f "$CONFIG_FILE" ]] || log_err "配置文件 $CONFIG_FILE 不存在，请先运行安装脚本"
+[[ -f "csd" ]]          || log_err "csd 程序不存在，请先运行安装脚本"
+[[ -f "genesis.bin" ]]  || log_err "genesis.bin 不存在，请先运行安装脚本"
 python3 --version >/dev/null 2>&1 || log_err "未找到 python3"
 python3 -c "import aiohttp" 2>/dev/null || log_err "缺少依赖，请运行：pip install -r requirements.txt"
 
-# ── 引导节点处理 ──────────────────────────────────────────────────────────────
 if [[ -z "$ARG_BOOTNODES" ]]; then
     BN_FLAG=""
     log_info "引导节点：使用 config.yaml 中的配置"
@@ -81,19 +69,12 @@ elif [[ "${ARG_BOOTNODES,,}" == "全部" ]] || [[ "${ARG_BOOTNODES,,}" == "all" 
     BN_LIST=$(IFS=","; echo "${MAINNET_NODES[*]}")
     BN_FLAG="--bootnodes ${BN_LIST}"
     log_info "引导节点：全部 ${#MAINNET_NODES[@]} 个主网节点"
-    for bn in "${MAINNET_NODES[@]}"; do
-        log_info "  → $bn"
-    done
 else
     BN_FLAG="--bootnodes ${ARG_BOOTNODES}"
     IFS=',' read -ra NODE_ARR <<< "$ARG_BOOTNODES"
     log_info "引导节点：${#NODE_ARR[@]} 个自定义节点"
-    for bn in "${NODE_ARR[@]}"; do
-        log_info "  → $bn"
-    done
 fi
 
-# ── 显卡信息 ──────────────────────────────────────────────────────────────────
 if command -v nvidia-smi &>/dev/null; then
     GPU_IDX="${ARG_GPU:-0}"
     GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader -i "$GPU_IDX" 2>/dev/null || echo "未知")
@@ -104,11 +85,10 @@ fi
 
 [[ -n "$ARG_GPU" ]] && GPU_FLAG="--gpu $ARG_GPU" || GPU_FLAG=""
 
-# ── 启动 ──────────────────────────────────────────────────────────────────────
 echo ""
-echo -e "${GREEN}════════════════════════════════════════${RESET}"
-echo -e "${GREEN}   CSD 单机 GPU 矿工  ·  正在启动      ${RESET}"
-echo -e "${GREEN}════════════════════════════════════════${RESET}"
+echo "========================================"
+echo "   CSD 单机 GPU 矿工  ·  正在启动"
+echo "========================================"
 echo ""
 
 CMD="python3 miner.py --config ${CONFIG_FILE} ${BN_FLAG} ${GPU_FLAG} ${ARG_NO_NODE} ${ARG_DEBUG} ${ARG_SKIP_BW} ${ARG_BW_THRESHOLD}"
